@@ -1,0 +1,61 @@
+schema: spec-driven
+
+context: |
+  Gas City is an orchestration-builder SDK: a Go toolkit for composing
+  multi-agent coding workflows. It extracts Gas Town's battle-tested subsystems
+  (github.com/steveyegge/gastown) into a configurable SDK.
+
+  THE CORE PRINCIPLE: zero hardcoded roles. The SDK ships no built-in Mayor,
+  Deacon, Polecat, Witness, or Refinery. If a line of Go references a specific
+  role name, it is a bug. Roles are user-supplied configuration in packs.
+
+  The dividing line, from docs/getting-started/coming-from-gastown.md: "Only
+  orchestrator infrastructure belongs in platform code; the rest lives in the
+  pack." Deciding which side a mechanism falls on is the recurring design
+  question in this repo.
+
+  Vocabulary (Gas Town terms the SDK deliberately does not implement):
+  - mayor, deacon, boot, dog: city-scoped roles
+  - witness: lifecycle observer, publishes health/transition events
+  - refinery: rig-scoped role
+  - polecat: ephemeral worker on its own git worktree
+  - crew: individually named long-lived agents
+
+  Gas City's own terms of art: city, rig, bead (work item), formula, convoy,
+  order (scheduled/event exec), wisp (ephemeral molecule), sling (route a bead
+  to an agent), drain (a session ending cleanly).
+
+  Go 1.26. Beads are stored in a managed Dolt server. Packs live under
+  internal/bootstrap/packs/ and examples/. Engineering docs live in engdocs/;
+  this openspec/ root is newer and is the preferred home for change proposals.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
