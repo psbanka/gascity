@@ -663,8 +663,23 @@ func (c *client) ensurePlacement(ctx context.Context, wsLabel, tabLabel, cwd str
 // against a perfectly healthy server ("did not become ready"), and every
 // retry launches a redundant herdr server contending for the same pane
 // ("agent_pane_busy") — ga-nqlb8q.
+// herdrConfigDir mirrors herdr's own config-directory resolution: XDG_CONFIG_HOME
+// when set, else $HOME/.config. os.UserConfigDir() is NOT equivalent — on
+// darwin it returns ~/Library/Application Support and ignores XDG_CONFIG_HOME
+// outright, so every dial lands on a path no herdr process ever binds and
+// serverAlive() reads false against a healthy server. The XDG-honoring half of
+// ga-nqlb8q (agent sandboxes that set XDG_CONFIG_HOME while $HOME points
+// elsewhere) is preserved; only the darwin fallback changes.
+func herdrConfigDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config")
+}
+
 func (c *client) socketPath() string {
-	configDir, _ := os.UserConfigDir()
+	configDir := herdrConfigDir()
 	if c.session == "" || c.session == "default" {
 		return filepath.Join(configDir, "herdr", "herdr.sock")
 	}
