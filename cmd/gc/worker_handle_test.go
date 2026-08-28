@@ -139,8 +139,8 @@ func TestResolvedWorkerRuntimeWithConfigUsesProviderLaunchCommand(t *testing.T) 
 	if !strings.Contains(resolved.Command, "--dangerously-skip-permissions") {
 		t.Fatalf("Command = %q, want unrestricted default", resolved.Command)
 	}
-	if !strings.Contains(resolved.Command, "--effort max") {
-		t.Fatalf("Command = %q, want effort max default", resolved.Command)
+	if strings.Contains(resolved.Command, "--effort") {
+		t.Fatalf("Command = %q, want no --effort flag: a default effort would override the operator's Claude Code effortLevel setting", resolved.Command)
 	}
 	if !strings.Contains(resolved.Command, "--settings") {
 		t.Fatalf("Command = %q, want settings arg", resolved.Command)
@@ -198,8 +198,8 @@ func TestResolvedWorkerRuntimeResumesPoolSessionPreservesLaunchFlags(t *testing.
 	if !strings.Contains(runtimeCfg.Command, "--dangerously-skip-permissions") {
 		t.Fatalf("resumed pool Command = %q, want --dangerously-skip-permissions", runtimeCfg.Command)
 	}
-	if !strings.Contains(runtimeCfg.Command, "--effort max") {
-		t.Fatalf("resumed pool Command = %q, want --effort max default", runtimeCfg.Command)
+	if strings.Contains(runtimeCfg.Command, "--effort") {
+		t.Fatalf("resumed pool Command = %q, want no --effort flag: a default effort would override the operator's Claude Code effortLevel setting", runtimeCfg.Command)
 	}
 	if !strings.Contains(runtimeCfg.Command, "--settings") {
 		t.Fatalf("resumed pool Command = %q, want --settings arg", runtimeCfg.Command)

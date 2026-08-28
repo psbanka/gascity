@@ -2925,8 +2925,8 @@ func TestResolvedSessionCommandIncludesDefaultsAndSettings(t *testing.T) {
 	if !strings.Contains(got, "--dangerously-skip-permissions") {
 		t.Fatalf("command %q should include unrestricted default permissions", got)
 	}
-	if !strings.Contains(got, "--effort max") {
-		t.Fatalf("command %q should include effort=max default", got)
+	if strings.Contains(got, "--effort") {
+		t.Fatalf("command %q should not include an --effort flag: effort has no builtin default", got)
 	}
 	wantSettings := `--settings "` + settingsPath + `"`
 	if !strings.Contains(got, wantSettings) {

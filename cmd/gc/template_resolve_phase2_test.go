@@ -58,7 +58,7 @@ func selectedPhase2ProviderCases(t *testing.T) []phase2ProviderCase {
 		{
 			profileID:             "claude/tmux-cli",
 			family:                "claude",
-			wantCommandPrefix:     "claude --dangerously-skip-permissions --effort max",
+			wantCommandPrefix:     "claude --dangerously-skip-permissions",
 			wantSettingsArg:       true,
 			wantReadyDelayMs:      10000,
 			wantReadyPromptPrefix: "❯ ",

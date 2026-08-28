@@ -1687,7 +1687,7 @@ func noSkillLiveProviderDefaults(provider string) (promptMode, promptFlag string
 	case "antigravity":
 		return "flag", "--prompt-interactive", 5000, []string{"--dangerously-skip-permissions"}
 	default:
-		return "arg", "", 10000, []string{"--dangerously-skip-permissions", "--effort", "max"}
+		return "arg", "", 10000, []string{"--dangerously-skip-permissions"}
 	}
 }
 

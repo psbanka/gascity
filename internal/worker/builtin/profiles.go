@@ -108,9 +108,13 @@ var builtinProviderSpecs = map[string]BuiltinProviderSpec{
 		UpstreamBaseURLEnv:   "ANTHROPIC_BASE_URL",
 		UpstreamAPIKeyEnv:    "ANTHROPIC_API_KEY",
 		UpstreamAuthTokenEnv: "ANTHROPIC_AUTH_TOKEN",
+		// effort intentionally has no OptionDefaults entry: a default --effort
+		// flag would land on every launch command, and a CLI flag beats the
+		// operator's own effortLevel in Claude Code's settings.json, silently
+		// overriding it fleet-wide. Operators opt in per city or per agent via
+		// option_defaults.
 		OptionDefaults: map[string]string{
 			"permission_mode": "unrestricted",
-			"effort":          "max",
 		},
 		PromptMode:             "arg",
 		ReadyDelayMs:           10000,

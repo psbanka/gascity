@@ -109,9 +109,11 @@ func TestBuiltinClaudeCommandString(t *testing.T) {
 	if cs != "claude" {
 		t.Errorf("CommandString() = %q, want %q", cs, "claude")
 	}
-	// Default args should produce the permission flag and effort flag.
+	// Default args should produce the permission flag only. Effort has no
+	// builtin default: a default --effort flag would override the operator's
+	// own effortLevel in Claude Code settings on every launch.
 	defaultArgs := rp.ResolveDefaultArgs()
-	wantArgs := []string{"--dangerously-skip-permissions", "--effort", "max"}
+	wantArgs := []string{"--dangerously-skip-permissions"}
 	if len(defaultArgs) != len(wantArgs) {
 		t.Errorf("ResolveDefaultArgs() = %v, want %v", defaultArgs, wantArgs)
 	} else {

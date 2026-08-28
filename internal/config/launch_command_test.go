@@ -27,7 +27,7 @@ func TestBuildProviderLaunchCommandAddsDefaultsAndSettings(t *testing.T) {
 		t.Fatalf("BuildProviderLaunchCommand: %v", err)
 	}
 
-	wantCommand := fmt.Sprintf("claude --dangerously-skip-permissions --effort max --settings %q", filepath.Join(dir, ".gc", "settings.json"))
+	wantCommand := fmt.Sprintf("claude --dangerously-skip-permissions --settings %q", filepath.Join(dir, ".gc", "settings.json"))
 	if got.Command != wantCommand {
 		t.Fatalf("Command = %q, want %q", got.Command, wantCommand)
 	}
