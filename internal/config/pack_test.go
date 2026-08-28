@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -5467,4 +5468,92 @@ func mustResolvedPackNames(t *testing.T, includes []string, imports map[string]I
 		t.Fatalf("resolvedPackNames: %v", err)
 	}
 	return names
+}
+
+// TestLoadWithIncludes_HoistPromotesPackFormulasToCityLayer covers ga-kp9: a
+// pack reached only through a rig import can declare a city-scoped agent, and
+// the hoist promotes that agent to city scope. Its formulas must follow.
+// ComputeFormulaLayers builds a rig layer as city layers plus rig layers and
+// never the reverse, so a formula left at rig scope is unreachable from the
+// hoisted agent — the deacon patrol loop stops because pouring the next wisp
+// fails. Promotion is gated on the pack actually contributing a hoist: a
+// rig-imported pack with only rig-scoped agents keeps its formulas at rig
+// scope.
+func TestLoadWithIncludes_HoistPromotesPackFormulasToCityLayer(t *testing.T) {
+	dir := t.TempDir()
+	cityDir := filepath.Join(dir, "city")
+	for _, name := range []string{"city", "super", "plain"} {
+		mustMkdirAll(t, filepath.Join(dir, name), 0o755)
+	}
+
+	writeTestFile(t, cityDir, "city.toml", `
+[workspace]
+name = "test"
+
+[[rigs]]
+name = "proj"
+path = "/tmp/proj"
+
+[rigs.imports.super]
+source = "../super"
+
+[rigs.imports.plain]
+source = "../plain"
+`)
+	writeTestFile(t, filepath.Join(dir, "super"), "pack.toml", `
+[pack]
+name = "super"
+schema = 1
+
+[[agent]]
+name = "deacon"
+scope = "city"
+`)
+	writeTestFile(t, filepath.Join(dir, "super"), "formulas/mol-deacon-patrol.md", "patrol")
+	writeTestFile(t, filepath.Join(dir, "plain"), "pack.toml", `
+[pack]
+name = "plain"
+schema = 1
+
+[[agent]]
+name = "polecat"
+scope = "rig"
+`)
+	writeTestFile(t, filepath.Join(dir, "plain"), "formulas/mol-plain.md", "plain")
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+
+	// Precondition: the city-scoped agent hoisted out of the rig import.
+	var deacon *Agent
+	for i := range cfg.Agents {
+		if cfg.Agents[i].Name == "deacon" {
+			deacon = &cfg.Agents[i]
+		}
+	}
+	if deacon == nil || deacon.Dir != "" {
+		t.Fatalf("expected deacon hoisted to city scope; agents: %v", agentNamesOf(cfg.Agents))
+	}
+
+	superFormulas := filepath.Join(dir, "super", "formulas")
+	plainFormulas := filepath.Join(dir, "plain", "formulas")
+
+	if !slices.Contains(cfg.FormulaLayers.City, superFormulas) {
+		t.Errorf("pack that contributed a hoisted city agent: formulas %q missing from city layer; got %v",
+			superFormulas, cfg.FormulaLayers.City)
+	}
+	if slices.Contains(cfg.FormulaLayers.City, plainFormulas) {
+		t.Errorf("pack with no city-scoped agents: formulas %q promoted to city layer; got %v",
+			plainFormulas, cfg.FormulaLayers.City)
+	}
+
+	// The rig layer is unchanged — both packs still resolve at rig scope.
+	rigFormulas := cfg.FormulaLayers.SearchPaths("proj")
+	for _, want := range []string{superFormulas, plainFormulas} {
+		if !slices.Contains(rigFormulas, want) {
+			t.Errorf("rig layer lost %q; got %v", want, rigFormulas)
+		}
+	}
 }

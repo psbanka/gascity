@@ -214,20 +214,16 @@ func expandPacks(cfg *City, fs fsys.FS, cityRoot string, rigFormulaDirs map[stri
 
 			// Keep only rig-scoped and unscoped agents for rig expansion;
 			// hoist city-scoped ones to city scope instead of dropping them.
-			hoistedAgents = append(hoistedAgents, hoistCityScopedAgents(agents)...)
-			hoistedNamedSessions = append(hoistedNamedSessions, hoistCityScopedNamedSessions(namedSessions)...)
+			packHoistedAgents := hoistCityScopedAgents(agents)
+			packHoistedSessions := hoistCityScopedNamedSessions(namedSessions)
+			hoistedAgents = append(hoistedAgents, packHoistedAgents...)
+			hoistedNamedSessions = append(hoistedNamedSessions, packHoistedSessions...)
 			agents = filterAgentsByScope(agents, false)
 			namedSessions = filterNamedSessionsByScope(namedSessions, false)
 
 			// Record rig pack formula dirs (Layer 3) — derive from topoDirs.
-			if rigFormulaDirs != nil {
-				for _, td := range topoDirs {
-					fd := filepath.Join(td, "formulas")
-					if _, sErr := fs.Stat(fd); sErr == nil {
-						rigFormulaDirs[rig.Name] = append(rigFormulaDirs[rig.Name], fd)
-					}
-				}
-			}
+			recordPackFormulaDirs(cfg, fs, rig.Name, topoDirs, rigFormulaDirs,
+				len(packHoistedAgents) > 0 || len(packHoistedSessions) > 0)
 
 			rigAgents = append(rigAgents, agents...)
 			rigNamedSessions = append(rigNamedSessions, namedSessions...)
@@ -419,19 +415,15 @@ func expandPacks(cfg *City, fs fsys.FS, cityRoot string, rigFormulaDirs map[stri
 
 				// Hoist city-scoped agents/sessions to city scope instead of
 				// dropping them at the rig-import boundary.
-				hoistedAgents = append(hoistedAgents, hoistCityScopedAgents(agents)...)
-				hoistedNamedSessions = append(hoistedNamedSessions, hoistCityScopedNamedSessions(namedSessions)...)
+				packHoistedAgents := hoistCityScopedAgents(agents)
+				packHoistedSessions := hoistCityScopedNamedSessions(namedSessions)
+				hoistedAgents = append(hoistedAgents, packHoistedAgents...)
+				hoistedNamedSessions = append(hoistedNamedSessions, packHoistedSessions...)
 				agents = filterAgentsByScope(agents, false)
 				namedSessions = filterNamedSessionsByScope(namedSessions, false)
 
-				if rigFormulaDirs != nil {
-					for _, td := range topoDirs {
-						fd := filepath.Join(td, "formulas")
-						if _, sErr := fs.Stat(fd); sErr == nil {
-							rigFormulaDirs[rig.Name] = append(rigFormulaDirs[rig.Name], fd)
-						}
-					}
-				}
+				recordPackFormulaDirs(cfg, fs, rig.Name, topoDirs, rigFormulaDirs,
+					len(packHoistedAgents) > 0 || len(packHoistedSessions) > 0)
 
 				rigAgents = append(rigAgents, agents...)
 				rigNamedSessions = append(rigNamedSessions, namedSessions...)
@@ -2632,6 +2624,29 @@ func rigDeclaresImportBinding(rig Rig, bindingName string) bool {
 	}
 	_, ok := rig.Imports[bindingName]
 	return ok
+}
+
+// recordPackFormulaDirs files a rig pack closure's formulas/ dirs into that
+// rig's formula layer (Layer 3), and — when the pack contributed a hoisted
+// city-scoped agent or named session — into the city layer as well.
+// ComputeFormulaLayers builds a rig layer as city layers plus rig layers and
+// never the reverse, so a hoisted agent resolves formulas against the city
+// layer only. Without the city copy its own pack's formulas are unreachable
+// and pouring a wisp from them fails (ga-kp9). A pack with no city-scoped
+// agents promotes nothing.
+func recordPackFormulaDirs(cfg *City, fs fsys.FS, rigName string, topoDirs []string, rigFormulaDirs map[string][]string, hoistedToCity bool) {
+	for _, td := range topoDirs {
+		fd := filepath.Join(td, "formulas")
+		if _, err := fs.Stat(fd); err != nil {
+			continue
+		}
+		if rigFormulaDirs != nil {
+			rigFormulaDirs[rigName] = append(rigFormulaDirs[rigName], fd)
+		}
+		if hoistedToCity {
+			cfg.HoistedCityFormulaDirs = appendUnique(cfg.HoistedCityFormulaDirs, fd)
+		}
+	}
 }
 
 // hoistCityScopedAgents returns copies of the city-scoped agents in the

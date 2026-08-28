@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -693,8 +694,14 @@ func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 	// Always use FormulasDir() which defaults to "formulas" when
 	// [formulas] is not explicitly configured in city.toml.
 	cityLocalFormulas := citylayout.ResolveFormulasDir(cityRoot, root.FormulasDir())
+	// A pack reached only through a rig include/import can contribute a
+	// hoisted city-scoped agent. Its formulas must reach the city layer too,
+	// or the hoisted agent can never resolve them (ga-kp9). Hoisted dirs sort
+	// below the city's own pack formulas, so an explicitly city-included pack
+	// still wins — the same precedence mergeHoistedCityAgents applies.
+	cityFormulaDirs := appendUnique(slices.Clone(root.HoistedCityFormulaDirs), cityTopoFormulas...)
 	root.FormulaLayers = ComputeFormulaLayers(
-		cityTopoFormulas, cityLocalFormulas, rigFormulaDirs, root.Rigs, cityRoot)
+		cityFormulaDirs, cityLocalFormulas, rigFormulaDirs, root.Rigs, cityRoot)
 
 	// Inject implicit agents for built-in providers not already defined.
 	// Must happen after all composition (fragments, packs, patches) so

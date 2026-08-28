@@ -363,6 +363,14 @@ type City struct {
 	// RigImportPackDirs maps rig name to the rig's explicit-import closure,
 	// ordered low→high precedence for MCP resolution. Runtime-only.
 	RigImportPackDirs map[string][]string `toml:"-" json:"-"`
+	// HoistedCityFormulaDirs holds formulas/ directories from rig-scope
+	// packs that contributed a hoisted city-scoped agent or named session.
+	// A hoisted agent resolves formulas against the city layer only, so
+	// without this its own pack's formulas are unreachable. Folded into the
+	// city formula layer below the city's own pack formulas — an explicit
+	// city definition outranks a hoisted one, matching mergeHoistedCityAgents.
+	// Populated during pack expansion. Not from TOML.
+	HoistedCityFormulaDirs []string `toml:"-" json:"-"`
 	// PackOverlayDirs is the ordered list of overlay/ directories
 	// from all loaded city packs. Contents are copied to each agent's
 	// workdir during startup (before the agent's own OverlayDir).
