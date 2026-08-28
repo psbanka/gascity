@@ -4,7 +4,11 @@ Flatten Dolt commit history on managed databases to reduce storage, then run a
 full garbage collection to reclaim the orphaned chunks. Without flags, compact
 runs in scheduled mode: it skips any database below the commit-count threshold
 (default 2000, `GC_DOLT_COMPACT_THRESHOLD_COMMITS`), flattens the rest, verifies
-row preservation, and runs `CALL DOLT_GC('--full')`.
+row preservation, and runs `CALL DOLT_GC('--full')`. Scheduled mode defers the
+whole flatten pass while the managed Dolt server has been up for less than
+`GC_DOLT_COMPACT_STARTUP_GRACE_SECS` (default 1800, 0 disables), so a
+cooldown-due compaction cannot land in the post-start write burst and race the
+agents still waking; `--gc-only` and bare GC never defer.
 
 ## Flags
 

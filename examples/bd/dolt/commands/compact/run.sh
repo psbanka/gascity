@@ -95,6 +95,22 @@
 #                       notify-once-per-reason-forever (the marker never
 #                       re-mails on its own once a given reason has been
 #                       reported, even if left unresolved indefinitely).
+#   GC_DOLT_COMPACT_STARTUP_GRACE_SECS
+#     (default: 1800) — defer the scheduled flatten pass while the managed
+#                       dolt server has been up for fewer than this many
+#                       seconds. The compactor's cooldown order becomes due
+#                       the moment a city that was down longer than the
+#                       interval starts, which lands the flatten exactly in
+#                       the post-start write burst (agents waking, session
+#                       heartbeats committing) and forces the writer-race
+#                       machinery to defer or quarantine (ga-u0m). Server
+#                       start time is the managed runtime state file's
+#                       started_at — the same file port resolution already
+#                       validates; when it is missing or unparseable the
+#                       grace fails open and the flatten proceeds. Only the
+#                       flatten path defers: --gc-only (operator recovery)
+#                       and bare GC (memory pressure) always run. 0
+#                       disables.
 #   GC_DOLT_COMPACT_REMOTE               (optional) — remote to fetch/push.
 #                                         Defaults to origin when present;
 #                                         ambiguous multi-remote stores fail.
@@ -314,6 +330,7 @@ call_timeout="${GC_DOLT_COMPACT_CALL_TIMEOUT_SECS:-1800}"
 push_timeout="${GC_DOLT_COMPACT_PUSH_TIMEOUT_SECS:-120}"
 pending_push_max_age_secs="${GC_DOLT_COMPACT_PENDING_PUSH_MAX_AGE_SECS:-172800}"
 compact_renotify_backstop_secs="${GC_DOLT_COMPACT_RENOTIFY_BACKSTOP_SECS:-86400}"
+startup_grace_secs="${GC_DOLT_COMPACT_STARTUP_GRACE_SECS:-1800}"
 compact_remote="${GC_DOLT_COMPACT_REMOTE:-}"
 dry_run="${GC_DOLT_COMPACT_DRY_RUN:-}"
 only_dbs="${GC_DOLT_COMPACT_ONLY_DBS:-}"
@@ -398,6 +415,14 @@ case "$compact_renotify_backstop_secs" in
   ''|*[!0-9]*)
     printf 'compact: invalid GC_DOLT_COMPACT_RENOTIFY_BACKSTOP_SECS=%s (must be a non-negative integer)\n' \
       "$compact_renotify_backstop_secs" >&2
+    exit 2
+    ;;
+esac
+
+case "$startup_grace_secs" in
+  ''|*[!0-9]*)
+    printf 'compact: invalid GC_DOLT_COMPACT_STARTUP_GRACE_SECS=%s (must be a non-negative integer)\n' \
+      "$startup_grace_secs" >&2
     exit 2
     ;;
 esac
@@ -1853,6 +1878,34 @@ compact_marker_created_at_epoch() {
   parse_compact_timestamp "$created_at"
 }
 
+# within_startup_grace
+#   Returns 0 (and sets startup_grace_age_secs) when the managed dolt server
+#   has been up for fewer than startup_grace_secs seconds, per the runtime
+#   state file's started_at. A grace of 0 disables the check. A missing or
+#   unparseable started_at fails OPEN (returns 1 with a diagnostic): the
+#   grace is a scheduling refinement to keep the flatten out of the
+#   post-start write burst, and the post-flatten verify remains the
+#   correctness gate.
+within_startup_grace() {
+  startup_grace_age_secs=""
+  [ "$startup_grace_secs" -gt 0 ] || return 1
+  _sg_started_at=$(read_runtime_state_string "$DOLT_STATE_FILE" started_at)
+  _sg_epoch=""
+  if [ -n "$_sg_started_at" ]; then
+    _sg_epoch=$(parse_compact_timestamp "$_sg_started_at" || true)
+  fi
+  if [ -z "$_sg_epoch" ]; then
+    printf 'compact: managed runtime state %s has missing or unparseable started_at=%s — proceeding without startup grace\n' \
+      "$DOLT_STATE_FILE" "${_sg_started_at:-<empty>}"
+    return 1
+  fi
+  _sg_age=$(( $(date -u +%s) - _sg_epoch ))
+  [ "$_sg_age" -lt 0 ] && _sg_age=0
+  [ "$_sg_age" -lt "$startup_grace_secs" ] || return 1
+  startup_grace_age_secs="$_sg_age"
+  return 0
+}
+
 # ensure_remote_push_retry_fresh DIR DB MARKER_LABEL
 #   Gates an automatic remote-push retry on marker age: markers older than
 #   pending_push_max_age_secs fail the retry and alert. The alert event
@@ -3276,6 +3329,18 @@ main() {
   if ! acquire_lock; then
     printf 'compact: another compaction already running for %s:%s — skipping\n' \
       "$host" "$GC_DOLT_PORT"
+    exit 0
+  fi
+
+  # Startup grace (ga-u0m): the cooldown order becomes due the moment a city
+  # that was down longer than the interval starts, landing the flatten in the
+  # post-start write burst. Defer the whole flatten pass — before discovery,
+  # so a just-started city is not touched at all — until the server has aged
+  # past the grace. The reclaim modes are exempt: --gc-only is operator
+  # recovery and bare GC is the memory-pressure path.
+  if [ "$gc_only" = "0" ] && [ "$bare_gc" = "0" ] && within_startup_grace; then
+    printf 'compact: managed dolt server started %ss ago — within startup grace %ss; deferring flatten pass to a later run (set GC_DOLT_COMPACT_STARTUP_GRACE_SECS=0 to disable)\n' \
+      "$startup_grace_age_secs" "$startup_grace_secs"
     exit 0
   fi
 
