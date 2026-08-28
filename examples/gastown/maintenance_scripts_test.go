@@ -11046,3 +11046,264 @@ exit 0
 		t.Fatalf("cross-rig-deps summary missing or wrong (subshell counter regression?)\nwant substring: %q\ngot output:\n%s\nbd log:\n%s", want, out, logData)
 	}
 }
+
+// --- Backup-age gate absence policy + escalation dedup (ga-0h9) ---
+//
+// The gate must mirror doctor.BulkDeleteSafe (internal/doctor/
+// checks_bd_backup_freshness.go): a scope with NO backup state at all is
+// safe to prune ("no backup configured" is DoltBackupCheck's concern),
+// while a registered Dolt destination that never synced fails closed. And
+// an anomaly set unchanged from the previous run escalates once, with
+// repeats counted in the pack state file instead of filed as new mail.
+
+type reaperBackupGateFixture struct {
+	cityDir  string
+	binDir   string
+	stateDir string
+	doltLog  string
+	gcLog    string
+	bdLog    string
+}
+
+func newReaperBackupGateFixture(t *testing.T) reaperBackupGateFixture {
+	t.Helper()
+	f := reaperBackupGateFixture{
+		cityDir:  t.TempDir(),
+		binDir:   t.TempDir(),
+		stateDir: t.TempDir(),
+		doltLog:  filepath.Join(t.TempDir(), "dolt-args.log"),
+		gcLog:    filepath.Join(t.TempDir(), "gc.log"),
+		bdLog:    filepath.Join(t.TempDir(), "bd.log"),
+	}
+	writeCityBeadsMetadata(t, f.cityDir, "beads")
+	writeMaintenanceDoltStub(t, filepath.Join(f.binDir, "dolt"))
+	writeMaintenanceBdStub(t, filepath.Join(f.binDir, "bd"))
+	writeMaintenanceGCStub(t, filepath.Join(f.binDir, "gc"), `#!/bin/sh
+printf '%s\n' "$*" >> "$GC_CALL_LOG"
+exit 0
+`)
+	return f
+}
+
+func (f reaperBackupGateFixture) run(t *testing.T) string {
+	t.Helper()
+	env := map[string]string{
+		"BD_CALL_LOG":       f.bdLog,
+		"DOLT_ARGS_LOG":     f.doltLog,
+		"DOLT_DBS":          "beads",
+		"GC_CALL_LOG":       f.gcLog,
+		"GC_CITY":           f.cityDir,
+		"GC_CITY_PATH":      f.cityDir,
+		"GC_PACK_STATE_DIR": f.stateDir,
+		"GC_DOLT_HOST":      "127.0.0.1",
+		"GC_DOLT_PORT":      "3307",
+		"GC_DOLT_USER":      "root",
+		"GC_DOLT_PASSWORD":  "",
+		"PATH":              f.binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, err := runScriptResult(t, coreScriptPath("reaper.sh"), env)
+	if err != nil {
+		t.Fatalf("reaper.sh failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func (f reaperBackupGateFixture) gcLogText(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(f.gcLog)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ""
+		}
+		t.Fatalf("ReadFile(gc log): %v", err)
+	}
+	return string(data)
+}
+
+func (f reaperBackupGateFixture) escalationCount(t *testing.T) int {
+	t.Helper()
+	return strings.Count(f.gcLogText(t), "mail send human -s ESCALATION: Reaper anomalies detected [MEDIUM]")
+}
+
+type reaperEscalationState struct {
+	AnomalyKey  string `json:"anomaly_key"`
+	RepeatCount int    `json:"repeat_count"`
+	FirstSeen   string `json:"first_seen"`
+	LastSeen    string `json:"last_seen"`
+}
+
+func (f reaperBackupGateFixture) readEscalationState(t *testing.T) reaperEscalationState {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(f.stateDir, "reaper-state.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(reaper-state.json): %v", err)
+	}
+	var st reaperEscalationState
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("Unmarshal(reaper-state.json): %v\n%s", err, data)
+	}
+	return st
+}
+
+func writeDoltBackupRegistration(t *testing.T, cityDir string) {
+	t.Helper()
+	path := filepath.Join(cityDir, ".beads", "dolt-backup.json")
+	if err := os.WriteFile(path, []byte(`{"destination":"file:///backups/beads"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(dolt-backup.json): %v", err)
+	}
+}
+
+func writeFreshDoltBackupState(t *testing.T, cityDir string) {
+	t.Helper()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	path := filepath.Join(cityDir, ".beads", "dolt-backup-state.json")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"last_sync":%q}`, ts)), 0o644); err != nil {
+		t.Fatalf("WriteFile(dolt-backup-state.json): %v", err)
+	}
+}
+
+func writeStaleLegacyBackupState(t *testing.T, cityDir string, age time.Duration) {
+	t.Helper()
+	backupDir := filepath.Join(cityDir, ".beads", "backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(backup dir): %v", err)
+	}
+	ts := time.Now().Add(-age).UTC().Format(time.RFC3339)
+	path := filepath.Join(backupDir, "backup_state.json")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"timestamp":%q}`, ts)), 0o644); err != nil {
+		t.Fatalf("WriteFile(backup_state.json): %v", err)
+	}
+}
+
+// A Dolt city that never ran `bd backup init` has neither dolt-backup.json
+// nor the legacy backup_state.json. BulkDeleteSafe treats that as safe, so
+// the prune must run and no anomaly may latch (the observed failure filed
+// one identical MEDIUM escalation per cycle for fifteen days).
+func TestReaperBackupGateOpensWhenNoBackupPipelineConfigured(t *testing.T) {
+	f := newReaperBackupGateFixture(t)
+
+	f.run(t)
+
+	bdData, err := os.ReadFile(f.bdLog)
+	if err != nil {
+		t.Fatalf("ReadFile(bd log): %v", err)
+	}
+	if !strings.Contains(string(bdData), "args=prune --pattern gm-* --older-than 720h --force --json") {
+		t.Fatalf("bulk prune did not run on a city with no backup state (gate latched?):\n%s", bdData)
+	}
+	gcLogText := f.gcLogText(t)
+	if strings.Contains(gcLogText, "bulk prune skipped") {
+		t.Fatalf("gate recorded a bulk-prune anomaly on a city with no backup pipeline:\n%s", gcLogText)
+	}
+	if got := f.escalationCount(t); got != 0 {
+		t.Fatalf("reaper escalated %d times on a city with no backup pipeline, want 0:\n%s", got, gcLogText)
+	}
+}
+
+// A registered Dolt backup destination with no sync state means the backup
+// has never once completed — the gate must stay closed, matching
+// scanDoltBackupFreshness.
+func TestReaperBackupGateStaysClosedWhenDoltBackupRegisteredButNeverSynced(t *testing.T) {
+	f := newReaperBackupGateFixture(t)
+	writeDoltBackupRegistration(t, f.cityDir)
+
+	f.run(t)
+
+	bdData, _ := os.ReadFile(f.bdLog)
+	if strings.Contains(string(bdData), "args=prune") {
+		t.Fatalf("bulk prune ran despite a registered-but-never-synced dolt backup:\n%s", bdData)
+	}
+	gcLogText := f.gcLogText(t)
+	if !strings.Contains(gcLogText, "bulk prune skipped: backup stale or absent") {
+		t.Fatalf("missing bulk-prune-skipped anomaly for never-synced dolt backup:\n%s", gcLogText)
+	}
+	if got := f.escalationCount(t); got != 1 {
+		t.Fatalf("reaper escalated %d times, want 1:\n%s", got, gcLogText)
+	}
+}
+
+// An anomaly set unchanged from the previous run escalates once; the repeat
+// only bumps repeat_count in the pack state file.
+func TestReaperRepeatedIdenticalAnomalySuppressedWithCounter(t *testing.T) {
+	f := newReaperBackupGateFixture(t)
+	writeDoltBackupRegistration(t, f.cityDir)
+
+	f.run(t)
+	out := f.run(t)
+
+	if got := f.escalationCount(t); got != 1 {
+		t.Fatalf("identical anomaly escalated %d times across two runs, want 1:\n%s", got, f.gcLogText(t))
+	}
+	if !strings.Contains(out, "suppressed") {
+		t.Fatalf("second run did not report the suppressed escalation:\n%s", out)
+	}
+	st := f.readEscalationState(t)
+	if st.RepeatCount != 2 {
+		t.Fatalf("repeat_count = %d, want 2 (state: %+v)", st.RepeatCount, st)
+	}
+	if st.FirstSeen == "" || st.LastSeen == "" {
+		t.Fatalf("state missing first_seen/last_seen: %+v", st)
+	}
+}
+
+// A changed anomaly set escalates again, but digit churn alone (ages and
+// counts ticking between runs) does not defeat the dedup.
+func TestReaperChangedAnomalyEscalatesAgainButDigitChurnDoesNot(t *testing.T) {
+	f := newReaperBackupGateFixture(t)
+	writeDoltBackupRegistration(t, f.cityDir)
+
+	f.run(t)
+	if got := f.escalationCount(t); got != 1 {
+		t.Fatalf("first anomaly escalated %d times, want 1:\n%s", got, f.gcLogText(t))
+	}
+
+	// Flip the scenario: never-migrated scope whose legacy backup went stale.
+	// Different anomaly text (different source file) — must escalate again.
+	if err := os.Remove(filepath.Join(f.cityDir, ".beads", "dolt-backup.json")); err != nil {
+		t.Fatalf("Remove(dolt-backup.json): %v", err)
+	}
+	writeStaleLegacyBackupState(t, f.cityDir, 72*time.Hour)
+	f.run(t)
+	if got := f.escalationCount(t); got != 2 {
+		t.Fatalf("changed anomaly escalated %d times total, want 2:\n%s", got, f.gcLogText(t))
+	}
+
+	// Same condition again with a different age (the digits change every
+	// cycle) — must be suppressed as a repeat.
+	writeStaleLegacyBackupState(t, f.cityDir, 73*time.Hour)
+	f.run(t)
+	if got := f.escalationCount(t); got != 2 {
+		t.Fatalf("digit-only churn escalated again (%d total, want 2):\n%s", got, f.gcLogText(t))
+	}
+	if st := f.readEscalationState(t); st.RepeatCount != 2 {
+		t.Fatalf("repeat_count = %d, want 2 (state: %+v)", st.RepeatCount, st)
+	}
+}
+
+// When the anomalies clear, the dedup state clears with them, so a later
+// recurrence of the same anomaly is news and escalates again.
+func TestReaperReEscalatesAfterAnomalyClearsAndRecurs(t *testing.T) {
+	f := newReaperBackupGateFixture(t)
+	writeDoltBackupRegistration(t, f.cityDir)
+
+	f.run(t)
+	if got := f.escalationCount(t); got != 1 {
+		t.Fatalf("first anomaly escalated %d times, want 1:\n%s", got, f.gcLogText(t))
+	}
+
+	// Backup recovers: fresh sync state, no anomalies, state must clear.
+	writeFreshDoltBackupState(t, f.cityDir)
+	f.run(t)
+	if _, err := os.Stat(filepath.Join(f.stateDir, "reaper-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("escalation state not cleared after anomalies cleared (stat err: %v)", err)
+	}
+
+	// Same anomaly recurs after recovery — escalate fresh, not suppress.
+	if err := os.Remove(filepath.Join(f.cityDir, ".beads", "dolt-backup-state.json")); err != nil {
+		t.Fatalf("Remove(dolt-backup-state.json): %v", err)
+	}
+	f.run(t)
+	if got := f.escalationCount(t); got != 2 {
+		t.Fatalf("recurred anomaly escalated %d times total, want 2:\n%s", got, f.gcLogText(t))
+	}
+}

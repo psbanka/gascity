@@ -18,6 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/dolt-target.sh"
 CITY_ABS="$(cd "$CITY" 2>/dev/null && pwd -P || printf '%s\n' "$CITY")"
 CITY_BEADS_DIR="$CITY_ABS/.beads"
+PACK_STATE_DIR="${GC_PACK_STATE_DIR:-${GC_CITY_RUNTIME_DIR:-$CITY/.gc/runtime}/packs/core}"
+REAPER_STATE_FILE="$PACK_STATE_DIR/reaper-state.json"
 
 resolve_escalate_script() {
     local candidate
@@ -196,6 +198,60 @@ record_anomaly() {
     shift
     ANOMALIES="${ANOMALIES}$db: $*
 "
+}
+
+# Escalation dedup: an anomaly set unchanged from the previous run escalates
+# once; repeats only bump repeat_count in $REAPER_STATE_FILE. Digit runs are
+# collapsed before comparison so ages and counts that tick between runs do
+# not defeat the dedup. Without this, a latched anomaly files one identical
+# MEDIUM escalation per cycle and buries real escalations under the copies.
+reaper_anomaly_key() {
+    printf '%s' "$1" | tr -s '0-9' 'N'
+}
+
+write_reaper_state() {
+    local tmpfile
+    mkdir -p "$PACK_STATE_DIR" 2>/dev/null || return 0
+    tmpfile=$(mktemp "$REAPER_STATE_FILE.tmp.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s\n' "$1" > "$tmpfile"; then
+        mv -f "$tmpfile" "$REAPER_STATE_FILE" || rm -f "$tmpfile"
+    else
+        rm -f "$tmpfile"
+    fi
+}
+
+# Returns 0 (suppress) when the current anomaly key matches the stored one,
+# bumping the counter. Returns 1 (escalate) without touching state — the
+# caller records the new set only after the escalation actually goes out, so
+# a failed send retries next cycle. Without jq, dedup is disabled and every
+# run escalates, as before.
+reaper_escalation_is_repeat() {
+    local key prev count first now
+    command -v jq >/dev/null 2>&1 || return 1
+    [ -f "$REAPER_STATE_FILE" ] || return 1
+    key=$(reaper_anomaly_key "$1")
+    prev=$(jq -r '.anomaly_key // ""' "$REAPER_STATE_FILE" 2>/dev/null || true)
+    if [ -z "$prev" ] || [ "$key" != "$prev" ]; then
+        return 1
+    fi
+    now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    count=$(jq -r '.repeat_count // 1' "$REAPER_STATE_FILE" 2>/dev/null || echo 1)
+    case "$count" in ''|*[!0-9]*) count=1 ;; esac
+    first=$(jq -r '.first_seen // ""' "$REAPER_STATE_FILE" 2>/dev/null || true)
+    [ -n "$first" ] || first="$now"
+    write_reaper_state "$(jq -cn --arg key "$key" --argjson count "$((count + 1))" \
+        --arg first "$first" --arg now "$now" \
+        '{anomaly_key: $key, repeat_count: $count, first_seen: $first, last_seen: $now}')"
+    return 0
+}
+
+reaper_record_escalation() {
+    local key now
+    command -v jq >/dev/null 2>&1 || return 0
+    key=$(reaper_anomaly_key "$1")
+    now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    write_reaper_state "$(jq -cn --arg key "$key" --arg now "$now" \
+        '{anomaly_key: $key, repeat_count: 1, first_seen: $now, last_seen: $now}')"
 }
 
 CITY_DB_ANOMALY_RECORDED=0
@@ -1169,19 +1225,30 @@ if [ -d "$CITY_BEADS_DIR" ]; then
         # judged on the legacy embedded-store state. `bd backup sync` writes
         # only dolt-backup-state.json, so reading the legacy file on a migrated
         # scope would latch this gate closed with no backup action able to clear it.
+        # Absence policy also mirrors doctor.BulkDeleteSafe: a registered Dolt
+        # destination with no sync state has never completed a backup, so the
+        # gate fails closed; a scope with NO backup state at all has no backup
+        # pipeline configured — that is DoltBackupCheck's concern, and latching
+        # here would block the prune forever on a Dolt city that never ran
+        # `bd backup init` (its real backups, e.g. a dolt backup-sync order,
+        # write no state file either branch reads).
         _PRUNE_MAX_AGE="${GC_REAPER_BACKUP_MAX_AGE:-${GC_BACKUP_MAX_AGE_FOR_BULK_DELETE:-86400}}"
         case "$_PRUNE_MAX_AGE" in ''|*[!0-9]*) _PRUNE_MAX_AGE=86400 ;; esac
         if [ -f "$CITY_BEADS_DIR/dolt-backup.json" ]; then
             _BACKUP_STATE="$CITY_BEADS_DIR/dolt-backup-state.json"
             _BACKUP_FIELD="last_sync"
+            _BACKUP_REGISTERED=1
         else
             _BACKUP_STATE="$CITY_BEADS_DIR/backup/backup_state.json"
             _BACKUP_FIELD="timestamp"
+            _BACKUP_REGISTERED=0
         fi
         _PRUNE_SKIP=0
         if [ ! -f "$_BACKUP_STATE" ]; then
-            record_anomaly "$SESSION_PRUNE_ANOMALY_SCOPE" "bulk prune skipped: backup stale or absent (source=$_BACKUP_STATE age=absent threshold=${_PRUNE_MAX_AGE}s)"
-            _PRUNE_SKIP=1
+            if [ "$_BACKUP_REGISTERED" -eq 1 ]; then
+                record_anomaly "$SESSION_PRUNE_ANOMALY_SCOPE" "bulk prune skipped: backup stale or absent (source=$_BACKUP_STATE age=absent threshold=${_PRUNE_MAX_AGE}s)"
+                _PRUNE_SKIP=1
+            fi
         else
             _BACKUP_TS=$(sed -n "s/.*\"$_BACKUP_FIELD\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$_BACKUP_STATE" | head -1)
             if [ -z "$_BACKUP_TS" ]; then
@@ -1282,11 +1349,18 @@ if [ "$HAD_DATABASES" -eq 0 ] && [ "$SESSION_PRUNE_ATTEMPTED" -eq 0 ]; then
     exit 0
 fi
 
-# Report.
+# Report. An unchanged anomaly set escalates once; repeats bump the counter
+# in $REAPER_STATE_FILE instead of filing another identical escalation.
 if [ -n "$ANOMALIES" ]; then
-    "$ESCALATE_SCRIPT" \
+    if reaper_escalation_is_repeat "$ANOMALIES"; then
+        echo "reaper: anomalies unchanged since last escalation; suppressed (repeats counted in $REAPER_STATE_FILE)"
+    elif "$ESCALATE_SCRIPT" \
         --subject "ESCALATION: Reaper anomalies detected [MEDIUM]" \
-        --message "$ANOMALIES" 2>/dev/null || true
+        --message "${ANOMALIES}While this anomaly set stays unchanged, repeats bump repeat_count in $REAPER_STATE_FILE instead of re-mailing." 2>/dev/null; then
+        reaper_record_escalation "$ANOMALIES"
+    fi
+else
+    rm -f "$REAPER_STATE_FILE" 2>/dev/null || true
 fi
 
 SUMMARY="reaper — stale_wisps:$TOTAL_STALE_WISPS, closed_wisps:$TOTAL_CLOSED_WISPS, workflow_roots:$TOTAL_WORKFLOW_ROOTS_CLOSED, skipped_cross_store_workflow_roots:$TOTAL_WORKFLOW_ROOTS_STORE_REF_SKIPPED, skipped_non_city_workflow_issue_roots:$TOTAL_WORKFLOW_ISSUE_ROOTS_SKIPPED, purged:$TOTAL_PURGED, sessions-pruned:$TOTAL_SESSIONS_PRUNED, closed:$TOTAL_ISSUES_CLOSED, expired:$TOTAL_EXPIRED_ISSUES_CLOSED, expired_skipped:$TOTAL_EXPIRED_ISSUES_SKIPPED, skipped_non_city_issues:$TOTAL_STALE_ISSUES_SKIPPED, mail_wisps:$TOTAL_MAIL_WISPS"
