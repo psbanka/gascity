@@ -1946,6 +1946,10 @@
             "always"
           ],
           "description": "Mode controls when the controller ensures this named session is live.\n\"on_demand\" (default): reserve identity and materialize when work or\nan explicit reference requires it.\n\"always\": keep the canonical session controller-managed.\nNote: mode=\"always\" is independent of min_active_sessions; both produce\nsessions, and gc doctor reports accidental duplicate-pool combinations."
+        },
+        "restart_per_cycle": {
+          "type": "boolean",
+          "description": "RestartPerCycle acknowledges the mode=\"always\" + wake_mode=\"fresh\" combo\non this named session as a deliberate restart-per-cycle actor (watchdog,\nboot seat). It silences the always+fresh load advisory for this session."
         }
       },
       "additionalProperties": false,

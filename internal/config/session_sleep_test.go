@@ -233,14 +233,16 @@ func TestValidateNamedSessions_RejectsAlwaysWithSleepAfterIdle(t *testing.T) {
 
 func TestValidateNamedSessions_WarnsAlwaysWithFreshWakeMode(t *testing.T) {
 	tests := []struct {
-		name     string
-		mode     string
-		wakeMode string
-		wantWarn bool
+		name            string
+		mode            string
+		wakeMode        string
+		restartPerCycle bool
+		wantWarn        bool
 	}{
 		{name: "always fresh", mode: "always", wakeMode: "fresh", wantWarn: true},
 		{name: "always resume", mode: "always", wakeMode: "resume"},
 		{name: "on demand fresh", mode: "on_demand", wakeMode: "fresh"},
+		{name: "always fresh acknowledged", mode: "always", wakeMode: "fresh", restartPerCycle: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -251,8 +253,9 @@ func TestValidateNamedSessions_WarnsAlwaysWithFreshWakeMode(t *testing.T) {
 					WakeMode: tt.wakeMode,
 				}},
 				NamedSessions: []NamedSession{{
-					Template: "watchdog",
-					Mode:     tt.mode,
+					Template:        "watchdog",
+					Mode:            tt.mode,
+					RestartPerCycle: tt.restartPerCycle,
 				}},
 			}
 

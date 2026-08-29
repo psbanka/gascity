@@ -471,6 +471,10 @@ type NamedSession struct {
 	// Note: mode="always" is independent of min_active_sessions; both produce
 	// sessions, and gc doctor reports accidental duplicate-pool combinations.
 	Mode string `toml:"mode,omitempty" jsonschema:"enum=on_demand,enum=always"`
+	// RestartPerCycle acknowledges the mode="always" + wake_mode="fresh" combo
+	// on this named session as a deliberate restart-per-cycle actor (watchdog,
+	// boot seat). It silences the always+fresh load advisory for this session.
+	RestartPerCycle bool `toml:"restart_per_cycle,omitempty"`
 	// SourceDir is the directory where this named session's config was
 	// defined. Set during pack/fragment loading; empty for inline config.
 	// Runtime-only — not persisted to TOML or JSON.
@@ -4174,7 +4178,7 @@ func validateNamedSessions(cfg *City, requireBackingTemplate bool) (warnings []s
 		reservedSessionNames[sessionName] = identity
 		if s.ModeOrDefault() == "always" && agent != nil {
 			alwaysByTemplate[agent.QualifiedName()]++
-			if agent.EffectiveWakeMode() == "fresh" {
+			if agent.EffectiveWakeMode() == "fresh" && !s.RestartPerCycle {
 				warnings = append(warnings, fmt.Sprintf(
 					"named_session %q: mode %q with wake_mode %q on template %q %s; use only for a deliberate restart-per-cycle actor",
 					s.QualifiedName(), s.ModeOrDefault(), agent.EffectiveWakeMode(), agent.QualifiedName(),

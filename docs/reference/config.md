@@ -546,6 +546,7 @@ NamedSession defines a canonical persistent session backed by an agent template.
 | `scope` | string |  |  | Scope defines where this named session is instantiated in pack expansion: "city" (one per city) or "rig" (one per rig). Omit the field for an unscoped session instantiated in both city and rig expansion contexts. Enum: `city`, `rig` |
 | `dir` | string |  |  | Dir is the identity prefix for rig-scoped named sessions after pack expansion. Empty means city-scoped. |
 | `mode` | string |  |  | Mode controls when the controller ensures this named session is live. "on_demand" (default): reserve identity and materialize when work or an explicit reference requires it. "always": keep the canonical session controller-managed. Note: mode="always" is independent of min_active_sessions; both produce sessions, and gc doctor reports accidental duplicate-pool combinations. Enum: `on_demand`, `always` |
+| `restart_per_cycle` | boolean |  |  | RestartPerCycle acknowledges the mode="always" + wake_mode="fresh" combo on this named session as a deliberate restart-per-cycle actor (watchdog, boot seat). It silences the always+fresh load advisory for this session. |
 
 ## NamedSessionPatch
 

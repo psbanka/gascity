@@ -286,7 +286,9 @@ practice because config wake will keep restoring them. In v1:
   `sleep_after_idle` are invalid and fail validation
 - configs that combine `mode = "always"` with `wake_mode = "fresh"`
   should emit a warning unless the operator is deliberately modeling a
-  watchdog or other restart-per-cycle actor
+  watchdog or other restart-per-cycle actor. The operator acknowledges a
+  deliberate actor with `restart_per_cycle = true` on the named session,
+  which silences the advisory for that session.
 
 This matches the operator-level mental model: this session is supposed
 to be always available.
