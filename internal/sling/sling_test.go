@@ -3460,6 +3460,67 @@ func TestFinalizeAutoConvoy(t *testing.T) {
 	}
 }
 
+// TestReslingReusesLiveConvoy is the regression for ga-uuz: gc sling was not
+// idempotent across targets. The first sling routes the bead and mints an
+// auto-convoy; a re-sling to a different target falls through the pre-flight
+// (gc.routed_to no longer matches) and finalize minted a SECOND convoy while
+// the first still tracked the bead. The prior routing was stranded: its convoy
+// stayed open forever with no owner and no closure path. After the fix,
+// finalize reuses the live tracking convoy instead of minting a duplicate.
+func TestReslingReusesLiveConvoy(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		clearRoutedTo bool // simulate a hand-cleared gc.routed_to before the re-sling
+	}{
+		{name: "different target", clearRoutedTo: false},
+		{name: "same target after hand-cleared routed_to", clearRoutedTo: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := newFakeRunner()
+			cfg := &config.City{Workspace: config.Workspace{Name: "test"}}
+			first := config.Agent{Name: "polecat", MaxActiveSessions: intPtr(1)}
+			deps := testDeps(cfg, runtime.NewFake(), runner.run)
+
+			b, err := deps.Store.Create(beads.Bead{Title: "work", Type: "task"})
+			if err != nil {
+				t.Fatalf("store.Create(): %v", err)
+			}
+			r1, err := DoSling(SlingOpts{Target: first, BeadOrFormula: b.ID}, deps, deps.Store)
+			if err != nil {
+				t.Fatalf("first DoSling: %v", err)
+			}
+			if r1.ConvoyID == "" {
+				t.Fatal("first sling minted no auto-convoy")
+			}
+
+			if tc.clearRoutedTo {
+				if err := deps.Store.SetMetadata(b.ID, beadmeta.RoutedToMetadataKey, ""); err != nil {
+					t.Fatalf("clearing gc.routed_to: %v", err)
+				}
+			}
+			second := first
+			if !tc.clearRoutedTo {
+				second = config.Agent{Name: "reviewer", MaxActiveSessions: intPtr(1)}
+			}
+			r2, err := DoSling(SlingOpts{Target: second, BeadOrFormula: b.ID}, deps, deps.Store)
+			if err != nil {
+				t.Fatalf("re-sling DoSling: %v", err)
+			}
+
+			convoys, err := convoycore.TrackingConvoysForItem(deps.Store, b.ID)
+			if err != nil {
+				t.Fatalf("TrackingConvoysForItem(%s): %v", b.ID, err)
+			}
+			if len(convoys) != 1 {
+				t.Fatalf("%d convoys track %s, want exactly 1 (duplicate auto-convoy stranded the prior routing)", len(convoys), b.ID)
+			}
+			if r2.ConvoyID != r1.ConvoyID {
+				t.Errorf("re-sling ConvoyID = %q, want reuse of %q", r2.ConvoyID, r1.ConvoyID)
+			}
+		})
+	}
+}
+
 // TestFinalizeAutoConvoyPreservesEpicParent is a regression test for the
 // bug where `gc sling` re-parented a bead to its auto-convoy via
 // `bd update --parent`, silently evicting the bead's existing

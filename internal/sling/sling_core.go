@@ -747,6 +747,30 @@ func finalize(opts SlingOpts, deps SlingDeps, beadID, method string, result Slin
 			createAutoConvoy = false
 		}
 		if createAutoConvoy {
+			// Re-sling idempotency (ga-uuz): a re-sling that fell through the
+			// pre-flight (different target, or a hand-cleared gc.routed_to) must
+			// not mint a second convoy while the first still tracks the bead —
+			// the prior routing would be stranded, its convoy open forever with
+			// no closure path. Reuse the oldest live tracking convoy instead.
+			// Fail closed on lookup error: skip creation and surface the error
+			// rather than risk the duplicate (#2987).
+			existing, convErr := convoycore.TrackingConvoysForItem(deps.Store, beadID)
+			if convErr != nil {
+				result.MetadataErrors = append(result.MetadataErrors,
+					fmt.Sprintf("checking for a live tracking convoy: %v", convErr))
+				createAutoConvoy = false
+			} else {
+				for _, convoy := range existing {
+					if convoycore.IsTerminalStatus(convoy.Status) {
+						continue
+					}
+					result.ConvoyID = convoy.ID
+					createAutoConvoy = false
+					break
+				}
+			}
+		}
+		if createAutoConvoy {
 			var convoyLabels []string
 			if opts.Owned {
 				convoyLabels = []string{"owned"}
