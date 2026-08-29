@@ -3295,7 +3295,10 @@ type Agent struct {
 	SlingQuery string `toml:"sling_query,omitempty"`
 	// IdleTimeout is the maximum time an agent session can be inactive before
 	// the controller kills and restarts it. Duration string (e.g., "15m", "1h").
-	// Empty (default) disables idle checking.
+	// Empty disables idle checking — but an agent that declares no lifecycle
+	// key at all is composed with DefaultPoolIdleTimeout instead, so warm-idle
+	// sessions cannot linger indefinitely and strand routed work
+	// (ApplyPoolLifecycleDefaults, ga-r9s).
 	IdleTimeout string `toml:"idle_timeout,omitempty"`
 	// MaxSessionAge is the maximum wall-clock lifetime of a single runtime
 	// session before the controller preemptively restarts it. Duration string
@@ -3752,6 +3755,54 @@ func implicitAgentIdentities(cfg *City) map[agentKey]bool {
 		}
 	}
 	return result
+}
+
+// DefaultPoolIdleTimeout is the idle timeout composed into any agent that
+// declares no lifecycle key at all (ga-r9s). An agent that sets none inherits
+// no idle checking at all, so warm-idle pool sessions linger for hours — and
+// warm-idle workers are exactly the ones gc sling refuses to nudge, which is
+// how routed work strands. The reconciler's idle ladder already protects
+// genuine work (blocker, pending interaction, assigned-work defer, min-floor
+// rungs all defer before a stop), so a safe default only reaps sessions that
+// hold nothing and do nothing. 30m sits well left of the 2h ambient default
+// that produced the stranding and well right of a session mid-background-task
+// between bead claims.
+const DefaultPoolIdleTimeout = "30m"
+
+// ApplyPoolLifecycleDefaults gives every agent that declares no lifecycle key
+// at all the safe pool idle default. An agent counts as declaring lifecycle
+// policy when it sets any of: idle_timeout, sleep_after_idle,
+// min_active_sessions, max_active_sessions, max_session_age, wake_mode,
+// lifecycle, or scale_check. Agents with a configured named session and the
+// control dispatcher are skipped: their lifecycle is owned elsewhere. Call
+// after all config composition layers have been merged so user-supplied
+// values take precedence.
+func ApplyPoolLifecycleDefaults(cfg *City) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		if a.Name == ControlDispatcherAgentName {
+			continue
+		}
+		if FindNamedSession(cfg, a.QualifiedName()) != nil {
+			continue
+		}
+		if a.declaresLifecyclePolicy() {
+			continue
+		}
+		a.IdleTimeout = DefaultPoolIdleTimeout
+	}
+}
+
+// declaresLifecyclePolicy reports whether the agent sets any agent-level
+// lifecycle key. Any single key opts the agent out of the pool lifecycle
+// default: partial policies are deliberate choices, not omissions.
+func (a *Agent) declaresLifecyclePolicy() bool {
+	return a.IdleTimeout != "" || a.SleepAfterIdle != "" || a.MaxSessionAge != "" ||
+		a.WakeMode != "" || a.Lifecycle != "" || a.ScaleCheck != "" ||
+		a.MinActiveSessions != nil || a.MaxActiveSessions != nil
 }
 
 // ApplyAgentDefaults applies [agent_defaults] values to all agents that

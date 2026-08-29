@@ -172,7 +172,7 @@
         },
         "idle_timeout": {
           "type": "string",
-          "description": "IdleTimeout is the maximum time an agent session can be inactive before\nthe controller kills and restarts it. Duration string (e.g., \"15m\", \"1h\").\nEmpty (default) disables idle checking."
+          "description": "IdleTimeout is the maximum time an agent session can be inactive before\nthe controller kills and restarts it. Duration string (e.g., \"15m\", \"1h\").\nEmpty disables idle checking — but an agent that declares no lifecycle\nkey at all is composed with DefaultPoolIdleTimeout instead, so warm-idle\nsessions cannot linger indefinitely and strand routed work\n(ApplyPoolLifecycleDefaults, ga-r9s)."
         },
         "max_session_age": {
           "type": "string",
