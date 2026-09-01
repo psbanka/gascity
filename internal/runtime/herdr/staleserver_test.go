@@ -8,7 +8,7 @@ import (
 )
 
 // shortHome points socketPath()'s config-dir resolution at a short, isolated
-// temp dir via $XDG_CONFIG_HOME — the env var os.UserConfigDir() consults
+// temp dir via $XDG_CONFIG_HOME — the env var herdrConfigDir() consults
 // before $HOME (see socketPath's doc comment) — so these tests never touch
 // the real user's ~/.config/herdr/sessions/. The default t.TempDir()
 // (/var/folders/… on macOS) blows past the 104-byte unix-socket sun_path
@@ -22,6 +22,30 @@ func shortHome(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(configHome) })
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+}
+
+// With XDG_CONFIG_HOME unset, socketPath must resolve under $HOME/.config —
+// the path herdr itself binds — on EVERY platform. os.UserConfigDir() used
+// here before and returns $HOME/Library/Application Support on darwin while
+// ignoring XDG_CONFIG_HOME entirely, so on macOS every dial hit a socket no
+// herdr server ever binds: serverAlive() read false against a healthy
+// server, every spawn failed "did not become ready", and the reconciler
+// could not start a single session.
+func TestSocketPathResolvesXDGStyleUnderHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "/tmp/hdr-home")
+
+	c := newClient("resolution", "")
+	want := filepath.Join("/tmp/hdr-home", ".config", "herdr", "sessions", "resolution", "herdr.sock")
+	if got := c.socketPath(); got != want {
+		t.Fatalf("socketPath() = %q, want %q (herdr's own resolution)", got, want)
+	}
+
+	cDefault := newClient("", "")
+	wantDefault := filepath.Join("/tmp/hdr-home", ".config", "herdr", "herdr.sock")
+	if got := cDefault.socketPath(); got != wantDefault {
+		t.Fatalf("default-session socketPath() = %q, want %q", got, wantDefault)
+	}
 }
 
 // A stale socket inode — left by a herdr server that exited uncleanly — must not

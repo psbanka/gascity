@@ -671,28 +671,46 @@ func (c *client) ensurePlacement(ctx context.Context, wsLabel, tabLabel, cwd str
 // ── shared session-server lifecycle ──────────────────────────────────────────
 
 // socketPath is the unix socket for this client's herdr session. Must match
-// wherever the herdr binary itself resolves its config/state directory —
-// confirmed empirically (`XDG_CONFIG_HOME=X herdr --help` prints
-// "Config: X/herdr/config.toml" regardless of $HOME; with XDG_CONFIG_HOME
-// unset it falls back to "$HOME/.config/herdr/…") to be standard XDG Base
-// Directory precedence, i.e. exactly os.UserConfigDir() on this platform. A
-// plain os.UserHomeDir()+".config" join (the prior implementation) silently
-// ignores XDG_CONFIG_HOME, so it diverges from herdr's own resolution in any
-// environment that sets XDG_CONFIG_HOME while pointing $HOME elsewhere —
-// this fleet's agent sandboxes do exactly that. The result: this client
-// dials a socket no herdr process ever binds, so serverAlive() reads false
-// against a perfectly healthy server ("did not become ready"), and every
-// retry launches a redundant herdr server contending for the same pane
-// ("agent_pane_busy") — ga-nqlb8q.
+// wherever the herdr binary itself resolves its config/state directory:
+// $XDG_CONFIG_HOME when set, else $HOME/.config — confirmed empirically
+// (`XDG_CONFIG_HOME=X herdr --help` prints "Config: X/herdr/config.toml"
+// regardless of $HOME; with XDG_CONFIG_HOME unset it prints
+// "$HOME/.config/herdr/config.toml").
+//
+// This is herdr's resolution replicated, NOT os.UserConfigDir(): on darwin
+// Go returns $HOME/Library/Application Support for UserConfigDir and IGNORES
+// XDG_CONFIG_HOME entirely (the XDG branch is Unix-only), so the former use
+// of os.UserConfigDir() dialed a socket no herdr process ever binds on macOS
+// — serverAlive() read false against a perfectly healthy server ("did not
+// become ready"), every spawn failed at configure-server, and every retry
+// launched a redundant herdr server that exited "already running". The
+// sandbox case that motivated ga-nqlb8q (XDG_CONFIG_HOME set while $HOME
+// points elsewhere) is still honored: the env var wins here exactly as it
+// wins in herdr.
 func (c *client) socketPath() string {
 	if c.sockPath != "" {
 		return c.sockPath
 	}
-	configDir, _ := os.UserConfigDir()
+	configDir := herdrConfigDir()
 	if c.session == "" || c.session == "default" {
 		return filepath.Join(configDir, "herdr", "herdr.sock")
 	}
 	return filepath.Join(configDir, "herdr", "sessions", c.session, "herdr.sock")
+}
+
+// herdrConfigDir resolves herdr's config root the way the herdr binary does
+// (see socketPath): XDG_CONFIG_HOME wins, else $HOME/.config — on every
+// platform. Never os.UserConfigDir(), which diverges from this on darwin
+// (Library/Application Support, XDG ignored).
+func herdrConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return xdg
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, ".config")
 }
 
 // serverAlive reports whether the session-server is actually accepting
